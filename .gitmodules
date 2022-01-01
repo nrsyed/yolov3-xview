@@ -1,0 +1,3 @@
+[submodule "reference/xView1_baseline"]
+	path = reference/xView1_baseline
+	url = git@github.com:DIUx-xView/xView1_baseline.git
