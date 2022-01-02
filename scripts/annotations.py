@@ -19,9 +19,6 @@ def to_dataframe(anns: dict, class_map: dict):
 
         if (class_id in class_map) and (image_id != "1395.tif"):
             class_ = class_map[class_id]
-
-            #bounds = ann["properties"]["bounds_imcoords"]
-            #bbox = [int(coord) for coord in bounds.split(",")]
             bbox = ann["properties"]["bounds_imcoords"]
             
             image_ids.append(image_id)
@@ -66,22 +63,26 @@ def postprocess_annotations(df: pd.DataFrame):
     # Remap specified "subclasses" (each element in the value/list) to a
     # different class name (each key).
     class_to_subclasses = {
-        "railway vehicle": [
-            "passenger car", "cargo car", "flat car", "tank car",
-            "locomotive"
+        "railcar": [
+            "passenger car", "cargo/container car", "flat car", "tank car",
+            "locomotive", "railway vehicle",
         ],
-        "construction vehicle": ["engineering vehicle"],
+        "industrial vehicle": [
+            "engineering vehicle", "excavator", "haul truck",
+            "cement mixer", "crane truck", "ground grader", "scraper/tractor",
+            "reach stacker", "straddle carrier", "front loader/bulldozer",
+            "mobile crane",
+        ],
         "truck": [
             "truck tractor w/ box trailer", "truck tractor", "trailer",
             "truck tractor w/ flatbed trailer", "truck tractor w/ liquid tank",
-            "cargo truck", "utility truck",
+            "cargo truck", "utility truck", "dump truck",
         ],
         "car": ["small car", "passenger vehicle"],
         "pickup": ["pickup truck"],
         "plane": [
             "fixed-wing aircraft", "passenger/cargo plane", "small aircraft",
         ],
-        "bulldozer": ["front loader/bulldozer"],
     }
 
     df = df[~df["class"].isin(exclude_classes)]
@@ -121,25 +122,123 @@ def show_image(fpath: pathlib.Path, df: pd.DataFrame):
     cv2.destroyWindow(fname)
 
 
-def init_parquet():
-    fpath = "xView_train.geojson"
-    class_labels_fpath = "xView1_baseline/xview_class_labels.txt"
-    
+def convert_to_parquet(
+    json_fpath: pathlib.Path, class_labels_fpath: pathlib.Path,
+    dst_fpath: pathlib.Path
+):
     class_map = load_class_map(class_labels_fpath)
-    anns = json.load(open(fpath, "r"))
+    anns = json.load(open(json_fpath, "r"))
     df = to_dataframe(anns, class_map)
     df = postprocess_annotations(df)
-    df.to_parquet("xview_train.parquet")
+    df = df.reset_index(drop=True)
+    df.to_parquet(dst_fpath)
+    print(f"Wrote annotations to {dst_fpath}")
+
+
+def make_splits(
+    df: pd.DataFrame, train_ratio: float = 0.8, val_ratio: float = 0.1
+):
+    """
+    TODO
+    """
+    #unused_fnames = set(df["id"].unique())
+    used_fnames = set()
+
+    train_df = pd.DataFrame(columns=df.columns)
+    val_df = pd.DataFrame(columns=df.columns)
+    test_df = pd.DataFrame(columns=df.columns)
+
+    test_ratio = 1 - train_ratio - val_ratio
+
+    # Order classes from fewest to most instances.
+    # DataFrame.value_counts returns an object containing classes in order
+    # of most to least frequent.
+    classes = []
+    for class_, count in df["class"].value_counts(ascending=True).items():
+        classes.append((class_, count))
+
+    for class_, count in classes:
+        # Number of instances of the current class to be placed in each of
+        # train, test, and val.
+        n_train = int(round(train_ratio * count))
+        n_val = int(round(val_ratio * count))
+        n_test = max(0, count - n_train - n_val)
+
+        # Subtract the number of instances already present in the respective
+        # dataset splits.
+        n_train = max(0, n_train - len(train_df[train_df["class"] == class_]))
+        n_val = max(0, n_val - len(val_df[val_df["class"] == class_]))
+        n_test = max(0, n_test - len(test_df[test_df["class"] == class_]))
+
+        # Count the number of instances of the current class in each file,
+        # using only files that have not yet been assigned to a split.
+        # We create a list in descending order of count, greedily assigning
+        # first to the train set, then val, then finally test.
+        _df = df[df["class"] == class_]
+
+        fnames = []
+        for fname, fname_count in _df["id"].value_counts().items():
+            if fname not in used_fnames:
+                fnames.append((fname, fname_count))
+
+        while n_train > 0 and fnames:
+            fname, fname_count = fnames.pop(0)
+            train_df = train_df.append(df[df["id"] == fname])
+            used_fnames.add(fname)
+            n_train -= fname_count
+
+        while n_val > 0 and fnames:
+            fname, fname_count = fnames.pop(0)
+            val_df = val_df.append(df[df["id"] == fname])
+            used_fnames.add(fname)
+            n_val -= fname_count
+
+        while n_test > 0 and fnames:
+            fname, fname_count = fnames.pop(0)
+            test_df = test_df.append(df[df["id"] == fname])
+            used_fnames.add(fname)
+            n_test -= fname_count
+
+    train_counts = dict(train_df["class"].value_counts())
+    val_counts = dict(val_df["class"].value_counts())
+    test_counts = dict(test_df["class"].value_counts())
+
+    for class_ in df["class"].unique():
+        n_train = train_counts[class_]
+        n_val = val_counts[class_]
+        n_test = test_counts[class_]
+        n_tot = n_train + n_val + n_test
+        print(
+            f"{class_}: {n_train}, {n_val}, {n_test} "
+            f"({n_train / n_tot:.2f}, {n_val / n_tot:.2f}, {n_test / n_tot:.2f})"
+        )
+
+    return train_df, val_df, test_df
+
 
 if __name__ == "__main__":
-    #init_parquet()
+    xview_dir = pathlib.Path("~/xview").expanduser()
+    json_fpath = xview_dir / "xView_train.geojson"
+    class_labels_fpath = xview_dir / "classes.txt"
 
-    anns_fpath = "xview_train.parquet"
-    img_dir = pathlib.Path("train_images")
+    anns_fpath = xview_dir / "xview.parquet"
+    train_fpath = xview_dir / "xview_train.parquet"
+    val_fpath = xview_dir / "xview_val.parquet"
+    test_fpath = xview_dir / "xview_test.parquet"
+
+    img_dir = xview_dir / "train_images"
+
+    #convert_to_parquet(json_fpath, class_labels_fpath, anns_fpath)
 
     df = pd.read_parquet(anns_fpath)
+    train_df, val_df, test_df = make_splits(df)
 
-    fnames = list(df["id"].unique())
-    for fname in fnames:
-        fpath = img_dir / fname
-        show_image(fpath, df)
+    train_df.to_parquet(train_fpath)
+    val_df.to_parquet(val_fpath)
+    test_df.to_parquet(test_fpath)
+
+    #df_ = df[df["class"] == "barge"]
+    #fnames = list(df_["id"].unique())
+    #for fname in fnames:
+    #    fpath = img_dir / fname
+    #    show_image(fpath, df)
