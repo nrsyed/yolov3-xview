@@ -199,6 +199,10 @@ def make_splits(
             used_fnames.add(fname)
             n_test -= fname_count
 
+    train_df = train_df.reset_index(drop=True)
+    val_df = val_df.reset_index(drop=True)
+    test_df = test_df.reset_index(drop=True)
+
     train_counts = dict(train_df["class"].value_counts())
     val_counts = dict(val_df["class"].value_counts())
     test_counts = dict(test_df["class"].value_counts())
@@ -229,7 +233,6 @@ if __name__ == "__main__":
     img_dir = xview_dir / "train_images"
 
     #convert_to_parquet(json_fpath, class_labels_fpath, anns_fpath)
-
     df = pd.read_parquet(anns_fpath)
     train_df, val_df, test_df = make_splits(df)
 
