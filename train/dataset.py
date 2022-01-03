@@ -1,11 +1,13 @@
 import concurrent.futures
 import os
 import pathlib
+from typing import List
 
 import cv2
 import numpy as np
 import pandas as pd
 import torch
+import torchvision
 
 
 def compute_stats(fpath):
@@ -57,22 +59,61 @@ def dataset_stats(image_dir: pathlib.Path, labels_fpath: pathlib.Path):
 
 class XViewDataset(torch.utils.data.Dataset):
     def __init__(
-        self, image_dir: pathlib.Path, labels_fpath: pathlib.Path
+        self, image_dir: pathlib.Path, labels_fpath: pathlib.Path,
+        transforms=None
     ):
-        self.image_dir = image_dir
+        classes = [
+            "barge", "bus", "car", "container ship", "ferry", "fishing vessel",
+            "helicopter", "industrial vehicle", "maritime vessel", "motorboat",
+            "oil tanker", "pickup", "plane", "railcar", "sailboat", "truck",
+            "tugboat", "yacht"
+        ]
+        class_to_idx = dict()
+        idx_to_class = dict()
+        for i, class_ in enumerate(classes):
+            class_to_idx[class_] = i
+            idx_to_class[i] = class_
+        self.class_to_idx = class_to_idx
+        self.idx_to_class = idx_to_class
+
         self.labels_fpath = labels_fpath
         self.labels = pd.read_parquet(labels_fpath)
-        self.images = os.listdir(image_dir).sort()
+
+        # Convert class name strings to integers.
+        self.labels["class"] = self.labels["class"].apply(
+            lambda class_: class_to_idx[class_]
+        )
+
+        # Convert bboxes from str to list of ints, and set any
+        # negative bbox coordinates to zero.
+        self.labels["bbox"] = self.labels["bbox"].apply(
+            lambda s: [max(0, int(val)) for val in s.split(",")]
+        )
+
+        self.image_dir = image_dir
+
+        self.images = list(self.labels["id"].unique())
+        self.images.sort(key=lambda fname: int(os.path.splitext(fname)[0]))
+
+        self.transforms = transforms
 
     def __getitem__(self, idx: int):
-        pass
+        fname = self.images[idx]
+        img_fpath = self.image_dir / fname
+        img = cv2.cvtColor(cv2.imread(str(img_fpath)), cv2.COLOR_BGR2RGB)
+
+        df = self.labels[self.labels["id"] == fname]
+
+        target = {
+            "bbox": df["bbox"],
+            "class": df["class"],
+            #"image_id": idx,
+        }
+
+        if self.transforms is not None:
+            img, target = self.transforms(img, target)
+
+        return img, target
 
     def __len__(self):
         return len(self.images)
-
-
-if __name__ == "__main__":
-    xview_dir = pathlib.Path("~/datasets/xview").expanduser()
-    image_dir = xview_dir / "images"
-    train_labels_path = xview_dir / "labels" / "xview_train.parquet"
-    dataset_stats(image_dir, train_labels_path)
